@@ -14,12 +14,25 @@ from typing import List
 from typing import Dict
 from urllib3.exceptions import InsecureRequestWarning
 urllib3.disable_warnings(category=InsecureRequestWarning)
-http = urllib3.PoolManager(cert_reqs='CERT_REQUIRED',ca_certs=certifi.where())
+# http = urllib3.PoolManager(cert_reqs='CERT_REQUIRED', ca_certs=certifi.where())
+
+
+import ssl
+
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    # Legacy Python that doesn't verify HTTPS certificates by default
+    pass
+else:
+    # Handle target environment that doesn't support HTTPS verification
+    ssl._create_default_https_context = _create_unverified_https_context
+
 
 class IBClient():
 
 
-    def __init__(self, username: str, account: str, password: str = "") -> None:
+    def __init__(self, username: str, account: str) -> None:
         
         """Initalizes a new instance of the IBClient Object.
 
@@ -37,62 +50,37 @@ class IBClient():
         ----
             >>> ib_paper_session = IBClient(
                 username='IB_PAPER_USERNAME',
-                account='IB_PAPER_account',
+                account='IB_PAPER_ACCOUNT',
             )
             >>> ib_paper_session
             >>> ib_regular_session = IBClient(
                 username='IB_REGULAR_USERNAME',
-                account='IB_REGULAR_account',
+                account='IB_REGULAR_ACCOUNT',
             )
             >>> ib_regular_session
 
         """
 
-        self.ACCOUNT = account
-        self.USERNAME = username
-        self.PASSWORD = password
-        
-        try:
-            self.CLIENT_PORTAL_FOLDER = pathlib.Path(__file__).parent.parent.joinpath('clientportal.beta.gw').resolve()
-        except pathlib:
-            raise FileNotFoundError("The Client Portal Gateway doesn't exist. You need to download it before using the Library.")
-        
-        self.API_VERSION = 'v1/'
-        self.TESTING_FLAG = False
+        self.account = account
+        self.username = username
+
+        self.api_version = 'v1/'
         self._operating_system = sys.platform
-        self.server_process = self._server_state(action ='load')
+        self.session_state_path: pathlib.Path = pathlib.Path(__file__).parent.joinpath('server_session.json').resolve()
         self.authenticated = False
 
         # Define URL Components
-        IB_GATEWAY_HOST = r"https://localhost"
-        IB_GATEWAY_PORT = r"5000"
-        self.IB_GATEWAY_PATH = IB_GATEWAY_HOST + ":" + IB_GATEWAY_PORT
-        self.BACKUP_GATEWAY_PATH = r"https://cdcdyn.interactivebrokers.com/portal.proxy"
+        ib_gateway_host = r"https://localhost"
+        ib_gateway_port = r"5000"
+        self.ib_gateway_path = ib_gateway_host + ":" + ib_gateway_port
+        self.backup_gateway_path = r"https://cdcdyn.interactivebrokers.com/portal.proxy"
 
-    def _set_server(self) -> bool:
-        """Sets the server info for the session.
-        
-        Sets the Server for the session, and if the server cannot be set then
-        script will halt. Otherwise will return True to continue on in the script.
-        
-        Returns:
-        ----
-        bool -- True if the server was set, False if wasn't
-        """
+        try:
+            self.client_portal_folder = pathlib.Path(__file__).parent.parent.joinpath('clientportal.beta.gw').resolve()
+        except FileNotFoundError:
+            raise FileNotFoundError("The Client Portal Gateway doesn't exist. You need to download it before using the Library.")
 
-        server_update_content = self.update_server_account(account_id = self.ACCOUNT, check = False)
-        success = '\nNew session has been created and authenticated. Requests will not be limited.\n'.upper()
-        failure = '\nCould not create a new session that was authenticated, exiting script.\n'.upper()
-
-        if 'set' in server_update_content.keys() and server_update_content['set'] == True:
-            print(success)
-            return True
-        elif ('message' in server_update_content.keys()) and (server_update_content['message'] == 'Account already set'):
-            print(success)
-            return True
-        else:
-            print(failure)
-            sys.exit()
+        self.server_process = self._server_state(action ='load')        
 
     def create_session(self) -> bool:
         """Creates a new session.
@@ -103,7 +91,7 @@ class IBClient():
         Usage:
         ----
             >>> ib_client = IBClient(
-                username='IB_PAPER_USERNAME',
+                username='IB_PAPER_username',
                 password='IB_PAPER_PASSWORD',
                 account='IB_PAPER_account',
             )
@@ -126,11 +114,11 @@ class IBClient():
         # more than likely it's running let's try and see if we can authenticate.
         auth_response = self.is_authenticated()
 
+
         if 'authenticated' in auth_response.keys() and auth_response['authenticated'] == True:
 
-            self.authenticated == True
-
             if self._set_server():
+                self.authenticated = True
                 return True
 
         else:
@@ -139,7 +127,33 @@ class IBClient():
             self.connect(start_server=False)
 
             if self._set_server():
+                self.authenticated = True
                 return True
+
+    def _set_server(self) -> bool:
+        """Sets the server info for the session.
+        
+        Sets the Server for the session, and if the server cannot be set then
+        script will halt. Otherwise will return True to continue on in the script.
+        
+        Returns:
+        ----
+        bool -- True if the server was set, False if wasn't
+        """
+
+        server_update_content = self.update_server_account(account_id = self.account, check = False)
+        success = '\nNew session has been created and authenticated. Requests will not be limited.\n'.upper()
+        failure = '\nCould not create a new session that was authenticated, exiting script.\n'.upper()
+
+        if 'set' in server_update_content.keys() and server_update_content['set'] == True:
+            print(success)
+            return True
+        elif ('message' in server_update_content.keys()) and (server_update_content['message'] == 'Account already set'):
+            print(success)
+            return True
+        else:
+            print(failure)
+            sys.exit()
 
     def _server_state(self, action: str = 'save') -> Union[None, int]:
         """Determines the server state.
@@ -161,27 +175,30 @@ class IBClient():
         """
 
         # define file components
-        dir_path = os.path.dirname(os.path.realpath(__file__))
-        filename = 'server_session.json'
-        file_path = os.path.join(dir_path, filename)
-        file_exists = os.path.exists(file_path)
+        # dir_path = os.path.dirname(os.path.realpath(__file__))
+        # filename = 'server_session.json'
+        # file_path = os.path.join(dir_path, filename)
+        file_exists = self.session_state_path.exists()
+
+        session_state_path = pathlib.Path(__file__).parent.joinpath('server_session.json').resolve()
 
         if action == 'save':
-            with open(file_path, 'w') as server_file:
+            with open(self.session_state_path, 'w') as server_file:
                 json.dump({'server_process_id':self.server_process},server_file)
 
         elif action == 'load' and file_exists:
-
-            with open(file_path, 'r') as server_file:
+            with open(self.session_state_path, 'r') as server_file:
                 server_state = json.load(server_file)
 
             proc_id = server_state['server_process_id']
 
             if self._operating_system == 'win32':
-                for process in os.popen('tasklist').read().splitlines()[4:]:
-                    if str(proc_id) in process:
-                        process_details = process.split()
-                        return proc_id
+
+                with os.popen('tasklist') as task_list:
+                    for process in task_list.read().splitlines()[4:]:
+                        if str(proc_id) in process:
+                            process_details = process.split()
+                            return proc_id
             else:
                 try:
                     os.kill(proc_id, 0)
@@ -190,7 +207,7 @@ class IBClient():
                     return None
 
         elif action == 'delete' and file_exists:
-            os.remove(file_path)
+            self.session_state_path.unlink()
         else:
             return None
 
@@ -214,23 +231,30 @@ class IBClient():
             # windows will use the command line application.
             if self._operating_system == 'win32':
                 IB_WEB_API_PROC = ["cmd", "/k", r"bin\run.bat", r"root\conf.yaml"]
-                self.server_process = subprocess.Popen(args = IB_WEB_API_PROC, cwd = self.CLIENT_PORTAL_FOLDER, creationflags = subprocess.CREATE_NEW_CONSOLE).pid
+                self.server_process = subprocess.Popen(
+                    args=IB_WEB_API_PROC,
+                    cwd=self.client_portal_folder,
+                    creationflags=subprocess.CREATE_NEW_CONSOLE
+                ).pid
 
             # mac will use the terminal.
             elif self._operating_system == 'darwin':
                 IB_WEB_API_PROC = ["open", "-F", "-a", "Terminal", r"bin/run.sh", r"root/conf.yaml"]
-                self.server_process = subprocess.Popen(args = IB_WEB_API_PROC, cwd = self.CLIENT_PORTAL_FOLDER).pid
+                self.server_process = subprocess.Popen(
+                    args=IB_WEB_API_PROC,
+                    cwd=self.client_portal_folder
+                ).pid
 
         self._server_state(action='save')
 
         print("""{}
         The Interactive Broker server is currently starting up, so we can authenticate your session.
             STEP 1: GO TO THE FOLLOWING URL: {}
-            STEP 2: LOGIN TO YOUR ACCOUNT WITH YOUR USERNAME AND PASSWORD.
+            STEP 2: LOGIN TO YOUR account WITH YOUR username AND PASSWORD.
             STEP 3: WHEN YOU SEE `Client login succeeds` RETURN BACK TO THE TERMINAL AND TYPE `YES` TO CHECK IF THE SESSION IS AUTHENTICATED.
             SERVER IS RUNNING ON PROCESS ID: {}
         {}
-        """.format('-'*80, self.IB_GATEWAY_PATH + "/sso/Login?forwardTo=22&RL=1&ip2loc=on", self.server_process, '-'*80)
+        """.format('-'*80, self.ib_gateway_path + "/sso/Login?forwardTo=22&RL=1&ip2loc=on", self.server_process, '-'*80)
         )
 
         while self.authenticated == False:
@@ -243,10 +267,19 @@ class IBClient():
                 auth_response = self.is_authenticated()
 
             if 'statusCode' in auth_response.keys() and auth_response['statusCode'] == 401:
-                self.reauthenticate()
-                self.authenticated = False
+                print("Session isn't connected, closing script.")
+                self.close_session()
+
             elif 'authenticated' in auth_response.keys() and auth_response['authenticated'] == True:
                 self.authenticated = True
+
+            elif 'authenticated' in auth_response.keys() and auth_response['authenticated'] == False:
+                
+                if self.reauthenticate().get('message','Null') == 'triggered':
+                    self.authenticated = True
+                else:
+                    self.authenticated = False    
+
             elif auth_response.get('authenticated','Null') in (False, 'Null') and auth_response.get('connected','Null') in (False, 'Null'):
                 
                 self.validate()
@@ -255,6 +288,7 @@ class IBClient():
                 else:
                     self.authenticated = False
 
+        self.authenticated = True
         return True
 
     def close_session(self) -> None:
@@ -304,10 +338,10 @@ class IBClient():
         """
 
         # otherwise build the URL
-        return urllib.parse.unquote(urllib.parse.urljoin(self.IB_GATEWAY_PATH, self.API_VERSION) + r'portal/' + endpoint)
+        return urllib.parse.unquote(urllib.parse.urljoin(self.ib_gateway_path, self.api_version) + r'portal/' + endpoint)
 
 
-    def _make_request(self, endpoint: str, req_type: str, params: Union[Dict, None]) -> Dict:
+    def _make_request(self, endpoint: str, req_type: str, params: Dict = None) -> Dict:
         """
             Handles all the requests made by the client and correctly organizes
             the information so it is sent correctly. Additionally it will also
@@ -339,7 +373,7 @@ class IBClient():
             headers = self._headers(mode = 'json')
 
             # grab the response.
-            response = requests.post(url, headers = headers, verify = False, data = json.dumps(params))
+            response = requests.post(url, headers = headers, json=params, verify = False)
 
         # SCENARIO 2: POST without a payload.
         elif req_type == 'POST'and params is None:
@@ -357,7 +391,7 @@ class IBClient():
         elif req_type == 'GET' and params is not None:
 
             # grab the response.
-            response = requests.get(url, headers = self._headers(mode = 'json'), verify = False, params = params)
+            response = requests.get(url, headers = self._headers(mode = 'json'), params = params, verify = False)
 
         # grab the status code
         status_code = response.status_code
@@ -893,13 +927,11 @@ class IBClient():
         # define request components
         endpoint = 'iserver/account'
         req_type = 'POST'
-        params = {'acctId':account_id}
+        params = {
+            'acctId':account_id
+        }
 
         content = self._make_request(endpoint = endpoint, req_type = req_type, params = params)
-
-        if 'status_code' in content.keys():
-            time.sleep(1)
-            content = self._make_request(endpoint = endpoint, req_type = req_type, params = params)
 
         return content
 
@@ -1426,13 +1458,13 @@ class IBClient():
             RTYPE Dictionary
         """
         # define request components
-        endpoint = r'/iserver/scanner/params'
+        endpoint = r'iserver/scanner/params'
         req_type = 'GET'
         content = self._make_request(endpoint = endpoint, req_type = req_type)
 
         return content
 
-    def run_scanner(self, instrument: str, scanner_type: str, location: str, size: int = 25, filters: dict = None) -> Dict:
+    def run_scanner(self, instrument: str, scanner_type: str, location: str, size: str = '25', filters: List[dict] = None) -> Dict:
         """
             Run a scanner to get a list of contracts.
 
@@ -1461,20 +1493,16 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/iserver/scanner/params'
+        endpoint = r'iserver/scanner/run'
         req_type = 'POST'
         payload = {
             "instrument": instrument,
             "type": scanner_type,
-            "filter": [
-                {
-                    "code": "string",
-                    "value": 0
-                }
-            ],
+            "filter":filters,
             "location": location,
             "size": size
         }
+        print(payload)
 
         content = self._make_request(endpoint = endpoint, req_type = req_type, params = payload)
 
@@ -1488,7 +1516,7 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/ibcust/entity/info'
+        endpoint = r'ibcust/entity/info'
         req_type = 'GET'
         content = self._make_request(endpoint = endpoint, req_type = req_type)
 
@@ -1502,7 +1530,7 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/fyi/unreadnumber'
+        endpoint = r'fyi/unreadnumber'
         req_type = 'GET'
         content = self._make_request(endpoint = endpoint, req_type = req_type)
 
@@ -1516,7 +1544,7 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/fyi/settings'
+        endpoint = r'fyi/settings'
         req_type = 'GET'
         content = self._make_request(endpoint = endpoint, req_type = req_type)
 
@@ -1538,7 +1566,7 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/fyi/settings/{}'
+        endpoint = r'fyi/settings/{}'
         req_type = 'POST'
         payload = {'enable': enable}
         content = self._make_request(endpoint = endpoint, req_type = req_type, params = payload)
@@ -1557,7 +1585,7 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/fyi/disclaimer/{}'
+        endpoint = r'fyi/disclaimer/{}'
         req_type = 'GET'
         content = self._make_request(endpoint = endpoint, req_type = req_type)
 
@@ -1575,7 +1603,7 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/fyi/disclaimer/{}'
+        endpoint = r'fyi/disclaimer/{}'
         req_type = 'PUT'
         content = self._make_request(endpoint = endpoint, req_type = req_type)
 
@@ -1589,7 +1617,7 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/fyi/deliveryoptions'
+        endpoint = r'fyi/deliveryoptions'
         req_type = 'GET'
         content = self._make_request(endpoint = endpoint, req_type = req_type)
 
@@ -1607,7 +1635,7 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/fundamentals/mf_profile_and_fees/{mutual_fund_id}'.format(mutual_fund_id = conid)
+        endpoint = r'fundamentals/mf_profile_and_fees/{mutual_fund_id}'.format(mutual_fund_id = conid)
         req_type = 'GET'
         content = self._make_request(endpoint = endpoint, req_type = req_type)
 
@@ -1640,7 +1668,7 @@ class IBClient():
         """
 
         # define request components
-        endpoint = r'/fundamentals/mf_performance/{mutual_fund_id}'.format(mutual_fund_id = conid)
+        endpoint = r'fundamentals/mf_performance/{mutual_fund_id}'.format(mutual_fund_id = conid)
         req_type = 'GET'
         payload = {
             'risk_period':None,
